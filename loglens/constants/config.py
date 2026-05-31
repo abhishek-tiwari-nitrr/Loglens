@@ -19,5 +19,5 @@ LOG_FORMAT: str = (
     "[ %(asctime)s ] [ %(levelname)-8s ] [ %(name)s:%(lineno)d ] - %(message)s"
 )
 
-# Minimum severity to record. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+# Minimum severity to record. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL 
 LOG_LEVEL = logging.INFO
