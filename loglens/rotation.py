@@ -195,8 +195,8 @@ class CompressTimedRotatingFileHandler(TimedRotatingFileHandler):
     Example:
     -------
         app.log (active - today's log)
-        app.2026-08-15.log.gz
-        app.2026-08-14.log.gz
+        app.log.2026-08-15.gz
+        app.log.2026-08-14.gz
 
     Parameters:
     ----------
