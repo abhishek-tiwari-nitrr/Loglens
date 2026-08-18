@@ -112,16 +112,53 @@ TIMESTAMP_PATTERNS = [
 APACHE_TS_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
 
 
-def _parse_timestamp():
-    pass
+def _parse_timestamp(raw_ts: str) -> datetime | None:
+    raw_timestamp = raw_ts.strip()
+    for format in [
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S,%f",  # Python logging's default asctime separator
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S,%f",  # Python logging's default asctime separator
+        "%Y-%m-%d %H:%M:%S",
+        "%d/%b/%Y:%H:%M:%S %z",
+        "%Y/%m/%d %H:%M:%S",
+        "%b %d %H:%M:%S",
+        "%b  %d %H:%M:%S",
+    ]:
+        try:
+            date_time = datetime.strftime(raw_ts, format)
+            if date_time.year == 1900:
+                date_time = date_time.replace(year=datetime.now().year)
+                return date_time
+        except ValueError:
+            continue
+    return None
 
 
-def _extact_timestamp():
-    pass
+def _extract_timestamp(line: str) -> datetime | None:
+    for pattern, _ in TIMESTAMP_PATTERNS:
+        match = pattern.search(line)
+        if match:
+            timestamp = _parse_timestamp(match.group(1))
+            if timestamp:
+                return timestamp
+    return None
 
 
-def _map_level():
-    pass
+def _map_level(raw: str) -> LogLevel:
+    mapping = {
+        "DEBUG": LogLevel.DEBUG,
+        "TRACE": LogLevel.DEBUG,
+        "INFO": LogLevel.INFO,
+        "NOTICE": LogLevel.INFO,
+        "WARNING": LogLevel.WARNING,
+        "WARN": LogLevel.WARNING,
+        "ERROR": LogLevel.ERROR,
+        "FATAL": LogLevel.CRITICAL,
+        "CRITICAL": LogLevel.CRITICAL,
+    }
+    return mapping.get(raw.upper(), LogLevel.UNKNOWN)
 
 
 class LogParser:
@@ -162,11 +199,14 @@ class LogParser:
         opener = self._get_opener(path)
 
         try:
-            pass
+            with opener(path, "rt", encoding=self.encoding, errors=self.error) as fh:
+                for line_no, raw_line in enumerate(fh, start=1):
+                    entry = self._parse_line(raw_line, line_no)
+
         except:
             pass
 
-    def parse_line():
+    def parse_lines():
         pass
 
     def count_lines():
@@ -178,6 +218,61 @@ class LogParser:
             return gzip.open
         return open
 
-    def _parse_line():
+    def _parse_line(self, raw: str, line_no: int) -> LogEntry:
         """ """
+        line = raw.rstrip("\n\r")
+
+        # user supplied pattern takes priority
+        if self.custom_pattern:
+            return self._apply_pattern(self.custom_pattern, line, line_no)
+
+        # try format specific pattern
+        for try_fn in (
+            self._try_generic,
+            self._try_apache,
+            self._try_ngix_error,
+            self._try_syslg,
+        ):
+            entry = try_fn(line, line_no)
+            if entry is not None:
+                return entry
+
+        # fallback: extract whatever we can 
+        return self._fallback(line, line_no)
+
+    def _try_generic():
         pass
+
+    def _try_apache():
+        pass
+
+    def _try_ngix_error():
+        pass
+
+    def _try_syslg():
+        pass
+
+    def _fallback(self, line: str, line_no: int) -> LogEntry:
+        level_match = LEVEL_PATTERN.search(line)
+        level = _map_level(level_match.group(1)) if level_match else LogLevel.UNKOWN
+        return LogEntry(
+            raw=line,
+            line_number=line_no,
+            timestamp=_extract_timestamp(line),
+            level=level,
+            message=line.strip(),
+        )
+
+    def _apply_pattern(self, pattern: re.Pattern, line: str, line_no: int) -> LogEntry:
+        match = pattern.search(line)
+        if not match:
+            return self._fallback(line, line_no)
+        group_dict = match.groupdict()
+        return LogEntry(
+            raw=line,
+            line_number=line_no,
+            level=_map_level(group_dict.get("level") or "UNKOWN"),
+            timestamp=_parse_timestamp(group_dict("time") or ""),
+            message=(group_dict.get("message") or line).strip(),
+            source=group_dict.get("source") or "",
+        )
