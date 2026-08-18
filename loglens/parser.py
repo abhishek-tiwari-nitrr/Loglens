@@ -1,17 +1,131 @@
 from __future__ import annotations
 import re
-from pathlib import Path
 from datetime import datetime
-from typing import Iterator
-from loglens.entity.log_entity import LogEntry, LogLevel
-from loglens.utils.utils import open_log_file, map_level, parse_timestamp
-from loglens.utils.log_patterns import PYTHON_LOG_PATTERN, LEVEL_PATTERN
-from loglens.logger import logger
-from loglens.exceptions import ApplicationException
+from pathlib import Path
+from enum import Enum
+from dataclasses import dataclass, field
+import logging
+import gzip
+from collections.abc import Iterator
+
+logger = logging.getLogger(__name__)
+
+
+class LogLevel(str, Enum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+    UNKOWN = "UNKOWN"
+
+
+@dataclass
+class LogEntry:
+    raw: str
+    line_number: int
+    level: LogLevel = LogLevel.UNKOWN
+    timestamp: datetime | None = None
+    message: str = ""
+    source: str = ""
+    extra: dict = field(default_factory=dict)
+
+    def _post_init__(self) -> None:
+        if not self.message:
+            self.message = self.raw.strip()
+
+    @property
+    def _is_error(self) -> bool:
+        return self.level in (LogLevel.ERROR, LogLevel.CRITICAL)
+
+    @property
+    def timestamp_str(self) -> str:
+        if self.timestamp:
+            return self.timestamp.isoformat()
+        return ""
+
+
+##Built in Patterns formats
+
+# Apache Combined Log Format
+APACHE_PATTERN = re.compile(
+    r"(?P<host>\S+)\s+\S+\s+\S+\s+"
+    r"\[(?P<time>[^\]]+)\]\s+"
+    r'"(?P<request>[^"]+)"\s+'
+    r"(?P<status>\d{3})\s+"
+    r"(?P<size>\S+)"
+    r'(?:\s+"(?P<referer>[^"]*)"\s+"(?P<agent>[^"]*)")?'
+)
+
+# Nginx error log
+NGINX_ERROR_PATTERN = re.compile(
+    r"(?P<time>\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})\s+"
+    r"\[(?P<level>\w+)\]\s+"
+    r"(?P<pid>\d+)#\d+:\s+"
+    r"(?P<message>.*)"
+)
+
+# Syslog format
+SYSLOG_PATTERN = re.compile(
+    r"(?P<time>\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2})\s+"
+    r"(?P<host>\S+)\s+"
+    r"(?P<process>[^:]+):\s+"
+    r"(?P<message>.*)"
+)
+
+# Generic application log (Python logging, Log4j style)
+GENERIC_PATTERN = re.compile(
+    r"(?P<time>\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s*"
+    r"[-\s]*(?P<level>DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL|NOTICE|TRACE)[-\s:]*"
+    r"(?P<message>.*)",
+    re.IGNORECASE,
+)
+
+# Level-only detection (fallback)
+LEVEL_PATTERN = re.compile(
+    r"\b(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL|NOTICE|TRACE)\b",
+    re.IGNORECASE,
+)
+
+# Timestamp patterns (multiple formats)
+TIMESTAMP_PATTERNS = [
+    # ISO 8601
+    (
+        re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)"),
+        "%Y-%m-%dT%H:%M:%S",
+    ),
+    (
+        re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)"),
+        "%Y-%m-%d %H:%M:%S",
+    ),
+    # Apache/Nginx style
+    (
+        re.compile(r"(\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+-]\d{4})"),
+        "%d/%b/%Y:%H:%M:%S %z",
+    ),
+    # Syslog style
+    (re.compile(r"(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})"), "%b %d %H:%M:%S"),
+    # Simple date time
+    (re.compile(r"(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})"), "%Y/%m/%d %H:%M:%S"),
+]
+
+APACHE_TS_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
+
+
+def _parse_timestamp():
+    pass
+
+
+def _extact_timestamp():
+    pass
+
+
+def _map_level():
+    pass
 
 
 class LogParser:
-    def __init__(
+    def __inti__(
         self,
         custom_pattern: re.Pattern | None = None,
         encoding: str = "utf-8",
@@ -21,120 +135,49 @@ class LogParser:
         self.encoding = encoding
         self.error = error
 
-    def parse_lines(self, lines: list[str]) -> list[LogEntry]:
-        return [self._parse_line(line, i) for i, line in enumerate(lines, start=1)]
-
-    def _parse_line(self, raw: str, line_number: int) -> LogEntry:
-        line = raw.rstrip("\n\r")
-
-        if self.custom_pattern:
-            return self._apply_pattern(self.custom_pattern, line, line_number)
-
-        for try_fn in self._try_python:
-            entry = try_fn(line, line_number)
-            if entry is not None:
-                return entry
-
-        return self._fallback(line, line_number)
-
     def parse_file(
         self,
         path: str | Path,
-        pattern_filter: re.Pattern | None = None,
         levels: list[str] | None = None,
+        pattern_filter: re.Pattern | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
     ) -> Iterator[LogEntry]:
         path = Path(path)
         if not path.exists():
-            logger.error(f"Log File not found: {path}")
-            raise FileNotFoundError(f"Log File not found: {path}")
+            # Logger uses lazy %s formatting; exceptions use f-strings to build the message immediately
+            logger.error("Log file not found: %s", path)
+            raise FileNotFoundError(f"Log file not found: {path}")
 
         logger.info(
-            f"Parsing: {path.name} (levels = {levels or "all"}, pattern = {pattern_filter.pattern if pattern_filter else None}, from = {date_from}, to = {date_to})"
+            "Parsing %s (levels=%s, pattern=%s, from=%s, to=%s)",
+            path.name,
+            levels or "all",
+            pattern_filter.pattern if pattern_filter else None,
+            date_from,
+            date_to,
         )
 
-        normalised_levels = {lv.upper() for lv in (levels or [])}
-        opener = open_log_file(path)
+        normalised_levels = {lv.upper() for lv in (levels, [])}
+        opener = self._get_opener(path)
 
         try:
-            with opener(path, "rt", encoding=self.encoding, errors=self.error) as f:
-                for (
-                    line_number,
-                    raw_line,
-                ) in enumerate(f, start=1):
-                    entry = self._parse_line(raw_line, line_number)
+            pass
+        except:
+            pass
 
-                    # Level filter
-                    if normalised_levels and entry.level.value not in normalised_levels:
-                        continue
-                    # Pattern (regex) filter
-                    if pattern_filter and not pattern_filter.search(raw_line):
-                        continue
-                    # Date "from" filter (lower bound)
-                    if date_from and entry.timestamp and entry.timestamp < date_from:
-                        continue
-                    # Date "to" filter (upper bound)
-                    if date_to and entry.timestamp and entry.timestamp > date_to:
-                        continue
+    def parse_line():
+        pass
 
-                    yield entry
+    def count_lines():
+        pass
 
-        except Exception as e:
-            logger.exception("Failed to read log file %s", path)
-            raise ApplicationException(f"Could not read log file: {path}", e) from e
+    def _get_opener(self, path: Path):
+        suffix = path.suffix.lower()
+        if suffix == ".gz":
+            return gzip.open
+        return open
 
-    def count_lines(self, path: str | Path) -> int:
-        path = Path(path)
-        opener = open_log_file(path)
-        count = 0
-        try:
-            with opener(path, "rt", encoding=self.encoding, errors=self.error) as f:
-                for _ in f:
-                    count += 1
-            return count
-        except Exception as e:
-            logger.error("Failed to count the lines of file %s", path)
-            raise ApplicationException(
-                f"Failed to count the lines of file: {path}", e
-            ) from e
-
-    def _try_python(self, line: str, line_number: int) -> LogEntry:
-        level_match = PYTHON_LOG_PATTERN.match(line)
-        if not level_match:
-            return None
-        return LogEntry(
-            raw=line,
-            line_number=line_number,
-            level=map_level(level_match.group("level")),
-            timestamp=parse_timestamp(level_match.group("time")),
-            message=level_match.group("message").strip(),
-        )
-
-    def _fallback(self, line: str, line_number: int) -> LogEntry:
-        level_match = LEVEL_PATTERN.search(line)
-        # first gp
-        level = map_level(level_match.group(1)) if level_match else LogLevel.UNKNOWN
-        return LogEntry(
-            raw=line,
-            line_number=line_number,
-            level=level,
-            timestamp=parse_timestamp(line),
-            message=line.strip(),
-        )
-
-    def _apply_pattern(
-        self, pattern: re.Pattern, line: str, line_number: int
-    ) -> LogEntry:
-        m = pattern.search(line)
-        if not m:
-            return self._fallback(line, line_number)
-        group_dict = m.groupdict()
-        return LogEntry(
-            raw=line,
-            line_number=line_number,
-            level=map_level(group_dict.get("level", "UNKNOWN")),
-            timestamp=parse_timestamp(group_dict.get("time", "")),
-            message=group_dict.get("message", line).strip(),
-            source=group_dict.get("source", ""),
-        )
+    def _parse_line():
+        """ """
+        pass
