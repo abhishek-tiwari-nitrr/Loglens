@@ -6,6 +6,7 @@ High-performance streaming log parser supporting multiple log formats: Apache, N
 `Parses line-by-line without loading entire files into memory.`
 
 """
+
 from __future__ import annotations
 import re
 from datetime import datetime
@@ -26,14 +27,15 @@ class LogLevel(str, Enum):
 
     Log files may use different names for the same severity level. The parser normalizes those names into this common set so callers can work with a consistent representation regardless of the source log format.
 
-    `UNKOWN` is used when the parser cannot identify a known severity level.
+    `UNKNOWN` is used when the parser cannot identify a known severity level.
     """
+
     DEBUG = "DEBUG"
     INFO = "INFO"
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
-    UNKOWN = "UNKOWN"
+    UNKNOWN = "UNKNOWN"
 
 
 @dataclass
@@ -45,30 +47,31 @@ class LogEntry:
 
     Parameters:
     ---------
-    raw: 
+    raw:
         The original log line after newline characters are removed.
-    line_number: 
+    line_number:
         The one-based line number where the entry was found.
-    level: 
+    level:
         Normalized severity level of the entry.
-    timestamp: 
+    timestamp:
         Parsed timestamp, if one could be extracted.
-    message: 
+    message:
         Main message content extracted from the log entry.
-    source: 
+    source:
         Host, service or other source identifier when available.
-    extra: 
+    extra:
         Additional format-specific fields extracted from the entry.
     """
+
     raw: str
     line_number: int
-    level: LogLevel = LogLevel.UNKOWN
+    level: LogLevel = LogLevel.UNKNOWN
     timestamp: datetime | None = None
     message: str = ""
-    source: str = ""
+    sources: str = ""
     extra: dict = field(default_factory=dict)
 
-    def _post_init__(self) -> None:
+    def __post_init__(self) -> None:
         """
         Use the raw log line as the message when no message was extracted.
 
@@ -78,7 +81,7 @@ class LogEntry:
             self.message = self.raw.strip()
 
     @property
-    def _is_error(self) -> bool:
+    def is_error(self) -> bool:
         """
         Return whether this entry represents an error-level event.
 
@@ -173,7 +176,7 @@ def _parse_timestamp(raw_ts: str) -> datetime | None:
 
     Parameters:
     ----------
-        raw_ts (str): 
+        raw_ts (str):
             Timestamp text extracted from a log line.
 
     Returns:
@@ -194,10 +197,10 @@ def _parse_timestamp(raw_ts: str) -> datetime | None:
         "%b  %d %H:%M:%S",
     ]:
         try:
-            date_time = datetime.strftime(raw_ts, format)
+            date_time = datetime.strptime(raw_timestamp, format)
             if date_time.year == 1900:
                 date_time = date_time.replace(year=datetime.now().year)
-                return date_time
+            return date_time
         except ValueError:
             continue
     return None
@@ -211,7 +214,7 @@ def _extract_timestamp(line: str) -> datetime | None:
 
     Parameters:
     ---------
-        line (str): 
+        line (str):
             Complete log line to inspect.
 
     Returns:
@@ -235,12 +238,12 @@ def _map_level(raw: str) -> LogLevel:
 
     Parameters:
     ---------
-        raw (str): 
+        raw (str):
             Raw severity name extracted from a log line.
 
     Returns:
     -------
-        LogLevel: 
+        LogLevel:
             The corresponding `LogLevel` value. Unknown values are mapped to the unknown severity level.
     """
     mapping = {
@@ -260,7 +263,7 @@ def _map_level(raw: str) -> LogLevel:
 class LogParser:
     """
     Streaming log parser with multi-format auto-detection.
-    
+
     Parses log files line-by-line for memory efficiency, even on multi-gigabyte log files. Supports gzip compressed files.
 
     Parameters
@@ -272,15 +275,16 @@ class LogParser:
     errors:
         Error handling for decode errors ('ignore', 'replace', 'strict').
     """
-    def __inti__(
+
+    def __init__(
         self,
         custom_pattern: re.Pattern | None = None,
         encoding: str = "utf-8",
-        error: str = "replace",
+        errors: str = "replace",
     ) -> None:
         self.custom_pattern = custom_pattern
         self.encoding = encoding
-        self.error = error
+        self.errors = errors
 
     def parse_file(
         self,
@@ -295,22 +299,22 @@ class LogParser:
 
         Parameters:
         ----------
-            path (str | Path): 
+            path (str | Path):
                 Path to the log file.
-            levels (list[str] | None, optional): 
+            levels (list[str] | None, optional):
                 Optional list of severity levels to include. When omitted, entries of all levels are returned.
-            pattern_filter (re.Pattern | None, optional): 
+            pattern_filter (re.Pattern | None, optional):
                 Optional regular expression. Only lines matching this expression are returned.
-            date_from (datetime | None, optional): 
+            date_from (datetime | None, optional):
                 Optional lower timestamp boundary. Entries before this timestamp are skipped.
-            date_to (datetime | None, optional): 
+            date_to (datetime | None, optional):
                 Optional upper timestamp boundary. Entries after this timestamp are skipped.
 
         Raises:
         -------
-            FileNotFoundError: 
+            FileNotFoundError:
                 If the specified log file does not exist.
-            ApplicationException: 
+            ApplicationException:
                 If the file cannot be read because of an operating system or text-decoding error.
 
         Yields:
@@ -332,11 +336,11 @@ class LogParser:
             date_to,
         )
 
-        normalised_levels = {lv.upper() for lv in (levels, [])}
+        normalised_levels = {lv.upper() for lv in (levels or [])}
         opener = self._get_opener(path)
 
         try:
-            with opener(path, "rt", encoding=self.encoding, errors=self.error) as fh:
+            with opener(path, "rt", encoding=self.encoding, errors=self.errors) as fh:
                 for line_no, raw_line in enumerate(fh, start=1):
                     entry = self._parse_line(raw_line, line_no)
 
@@ -357,6 +361,18 @@ class LogParser:
                 f"Could not read log file '{path}': {e}", e
             ) from e
 
+    def count_lines(self, path: str | Path) -> int:
+        """Efficiently count lines without parsing content."""
+        path = Path(path)
+        if not path.exists():
+            logger.error("Log file not found: %s", path)
+            raise FileNotFoundError(f"Log file not found: {path}")
+        opener = self._get_opener(path)
+        count = 0
+        with opener(path, "rt", encoding=self.encoding, errors=self.errors) as fh:
+            for _ in fh:
+                count += 1
+        return count
 
     def _get_opener(self, path: Path):
         """
@@ -364,12 +380,12 @@ class LogParser:
 
         Parameters:
         ----------
-            path (Path): 
+            path (Path):
                 Path to the log file.
 
         Returns:
         -------
-            _type_: 
+            _type_:
                 `gzip.open` for gzip-compressed files, otherwise `open`.
         """
         suffix = path.suffix.lower()
@@ -388,7 +404,7 @@ class LogParser:
             4. Nginx error log format.
             5. Syslog format.
             6. The fallback parser when no specific format matches.
-        
+
         This order allows application-specific parsing rules to take precedence while still providing automatic format detection for common log formats.
         """
         line = raw.rstrip("\n\r")
@@ -446,7 +462,7 @@ class LogParser:
             level=level,
             timestamp=_parse_timestamp(match.group("time")),
             message=match.group("request"),
-            source=match.group("host"),
+            sources=match.group("host"),
             extra={"status": status, "size": match.group("size")},
         )
 
@@ -461,9 +477,9 @@ class LogParser:
             raw=line,
             line_number=line_no,
             level=_map_level(match.group("level")),
-            timestamp=_parse_timestamp(match.group("timne")),
+            timestamp=_parse_timestamp(match.group("time")),
             message=match.group("message").strip(),
-            source="ngix",
+            sources="ngix",
             extra={"pid": match.group("pid")},
         )
 
@@ -475,7 +491,7 @@ class LogParser:
         if not match:
             return None
         message = match.group("message")
-        level_match = LEVEL_PATTERN.match(message)
+        level_match = LEVEL_PATTERN.search(message)
         level = _map_level(level_match.group(1)) if level_match else LogLevel.INFO
         return LogEntry(
             raw=line,
@@ -483,7 +499,7 @@ class LogParser:
             level=level,
             message=message,
             timestamp=_parse_timestamp(match.group("time")),
-            source=match.group("host"),
+            sources=match.group("host"),
             extra={"process": match.group("process")},
         )
 
@@ -496,7 +512,7 @@ class LogParser:
         This allows LogLens to return useful information even when a log format is only partially understood.
         """
         level_match = LEVEL_PATTERN.search(line)
-        level = _map_level(level_match.group(1)) if level_match else LogLevel.UNKOWN
+        level = _map_level(level_match.group(1)) if level_match else LogLevel.UNKNOWN
         return LogEntry(
             raw=line,
             line_number=line_no,
@@ -509,7 +525,7 @@ class LogParser:
         """
         Parse a log line using a user-supplied regular expression.
 
-        The custom pattern is expected to provide named groups such as `level`, `time`, `message`, and `source` when those fields are available.
+        The custom pattern is expected to provide named groups such as `level`, `time`, `message`, and `sources` (or `source`) when those fields are available.
 
         If the custom pattern does not match the line, parsing falls back to the standard fallback strategy.
 
@@ -521,8 +537,8 @@ class LogParser:
         return LogEntry(
             raw=line,
             line_number=line_no,
-            level=_map_level(group_dict.get("level") or "UNKOWN"),
-            timestamp=_parse_timestamp(group_dict("time") or ""),
+            level=_map_level(group_dict.get("level") or "UNKNOWN"),
+            timestamp=_parse_timestamp(group_dict.get("time") or ""),
             message=(group_dict.get("message") or line).strip(),
-            source=group_dict.get("source") or "",
+            sources=group_dict.get("sources") or group_dict.get("source") or "",
         )
